@@ -16,10 +16,10 @@ def set_seed(seed):
         np.random.seed(seed)
 
 
-def comparision_histplot_simulation(stock_i, training_data_path, generated_data_path, ground_truth_mean, ground_truth_cov, bins_num=50, x_bound=3, y_bound=0.04, zoomin_bound=0.5):
+def comparision_histplot_simulation(stock_i, training_data_path, generated_data_path, ground_truth_mean, ground_truth_cov, bins_num=50, x_bound=3, y_bound=0.04, zoomin_bound=0.5, *, show: bool = True):
     """
     Plot histogram comparison between generated and training data for a given stock.
-    
+
     Args:
         stock_i (int): Index of the stock to plot
         training_data_path (str): Path to training data file
@@ -30,11 +30,17 @@ def comparision_histplot_simulation(stock_i, training_data_path, generated_data_
         x_bound (float): X-axis limit
         y_bound (float): Y-axis limit
         zoomin_bound (float): Zoom-in area boundary
+        show (bool): Whether to call plt.show(). Set False when saving figures programmatically.
+
+    Returns:
+        fig, axes, bin_edges
     """
     # Load data
     training_return_data = np.load(training_data_path)
     generated_return_data = np.load(generated_data_path)
 
+    if training_return_data.ndim != 2:
+        training_return_data = training_return_data.reshape(training_return_data.shape[0], -1)
     # Print statistics
     print("Generated Samples:", generated_return_data[:, stock_i].min(), generated_return_data[:, stock_i].max(),
           np.round(generated_return_data[:, stock_i].mean(), 3), np.round(generated_return_data[:, stock_i].var(), 3))
@@ -44,7 +50,7 @@ def comparision_histplot_simulation(stock_i, training_data_path, generated_data_
 
     # Create figure
     fig, axes = plt.subplots(1, 2, figsize=(8, 3), dpi=400)
-    
+
     # Plot generated data
     sns.histplot(ax=axes[0], data=generated_return_data[:, stock_i], bins=bins_num, alpha=1,
                 stat="proportion", color="C0", label="Generated")
@@ -52,7 +58,7 @@ def comparision_histplot_simulation(stock_i, training_data_path, generated_data_
     return_cdf = norm.cdf(bin_edges, ground_truth_mean[stock_i], np.sqrt(ground_truth_cov[stock_i, stock_i]))
     cdf_diff = np.diff(return_cdf)
     axes[0].plot(bin_edges[1:], cdf_diff, label='Ground truth', color="C3", linestyle="--", linewidth=3)
-    
+
     # Plot training data
     sns.histplot(ax=axes[1], data=training_return_data[:, stock_i], bins=bin_edges, alpha=1,
                 stat="proportion", color="C2", label="Training")
@@ -68,7 +74,7 @@ def comparision_histplot_simulation(stock_i, training_data_path, generated_data_
         ax.tick_params(axis='y', labelsize=12)
         ax.set_ylabel("Frequency", fontsize=12)
         ax.legend(fontsize=12, loc='upper right')
-        
+
         # Set border style
         for spine in ax.spines.values():
             spine.set_color("black")
@@ -86,21 +92,22 @@ def comparision_histplot_simulation(stock_i, training_data_path, generated_data_
                         bins=bins_num if ax == axes[0] else bin_edges, alpha=1,
                         color="C0" if ax == axes[0] else "C2", stat="proportion")
             axins.plot(bin_edges[1:], cdf_diff, color="C3", linestyle="--", linewidth=2)
-            
+
             axins.set_xlim(-zoomin_bound, zoomin_bound)
             axins.set_ylim(0, y_bound)
             axins.set_yticks([])
             axins.set_ylabel("")
             axins.yaxis.set_major_formatter(plt.FuncFormatter(custom_formatter))
-            
+
             for spine in axins.spines.values():
                 spine.set_linestyle((0, (5, 4, 1, 4)))
                 spine.set_linewidth(1)
 
     plt.tight_layout()
-    plt.show()
-    
-    return bin_edges
+    if show:
+        plt.show()
+
+    return fig, axes, bin_edges
 
 
 def svd(A, k):
