@@ -1,25 +1,29 @@
 """
 Training script for Diffusion Factor Model
 """
-
 import os
+import sys
+# 在导入 torch 之前解析 --gpu 并设置 CUDA_VISIBLE_DEVICES
+def _early_parse_gpu(argv):
+    gpu = None
+    for i, tok in enumerate(argv):
+        if tok in ("--gpu", "-g"):
+            # 支持 --gpu 1 / -g 1
+            if i + 1 < len(argv):
+                gpu = argv[i + 1]
+            break
+        if tok.startswith("--gpu="):
+            # 支持 --gpu=1
+            gpu = tok.split("=", 1)[1]
+            break
+    if gpu is not None and gpu != "":
+        # 仅当外部未显式设置时才覆盖
+        if "CUDA_VISIBLE_DEVICES" not in os.environ:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(int(gpu))
+
+_early_parse_gpu(sys.argv)
 # 减少显存碎片化（按效果可改为 "expandable_segments:True"）
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:512")
-
-# 通过环境变量临时覆盖训练参数（方便在线调试）
-_OV = os.environ.get("OVERRIDE_BATCH")
-try:
-    OVERRIDE_BATCH = int(_OV) if _OV is not None else None
-except Exception:
-    OVERRIDE_BATCH = None
-
-DISABLE_AMP = os.environ.get("DISABLE_AMP", "0").lower() in ("1", "true", "yes")
-
-_GR = os.environ.get("OVERRIDE_GRAD_ACC")
-try:
-    OVERRIDE_GRAD_ACC = int(_GR) if _GR is not None else None
-except Exception:
-    OVERRIDE_GRAD_ACC = None
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 import numpy as np
@@ -30,6 +34,20 @@ import time
 
 from diffusion_factor_model.diffusion_factor_model import Unet, GaussianDiffusion, Trainer
 import config.config as config
+
+# 启动调试打印，确认每个进程看到的设备
+def _startup_debug():
+    try:
+        print(f"[train.py] CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}")
+        print(f"[train.py] torch.cuda.is_available()={torch.cuda.is_available()}")
+        print(f"[train.py] torch.cuda.device_count()={torch.cuda.device_count()}")
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+            cur = torch.cuda.current_device()
+            print(f"[train.py] current_device={cur}, name={torch.cuda.get_device_name(cur)}")
+    except Exception:
+        pass
+
+_startup_debug()
 
 def get_dim_mults_for_size(height, width):
     """
@@ -71,8 +89,8 @@ def train_model(data_path, seed=None, num_samples=None, gpu_id=0, epochs=None, s
                        (None = use config.SAVE_TIMESTEPS, which defaults to None meaning save only final result)
     """
     # Set GPU
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    
+    # os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+
     # Use config default if save_timesteps not specified
     if save_timesteps is None:
         save_timesteps = config.SAVE_TIMESTEPS
@@ -86,51 +104,51 @@ def train_model(data_path, seed=None, num_samples=None, gpu_id=0, epochs=None, s
     data_id = os.path.splitext(filename)[0]
     
     # Create experiment ID
-    exp_id = f"{config.EXP_PREFIX}_{data_id}_ts{timestamp}_seed{seed}"
-    
+    exp_id = f"{config.EXP_PREFIX}_{data_id}_ts{timestamp}_seed{seed}_num_examples{num_samples if num_samples is not None else 'all'}"
+
     # Load data to determine shape and dimensions
     data_np = np.load(data_path)
     data_shape = data_np.shape
     print(f"Loaded data with shape: {data_shape}, dtype: {data_np.dtype}")
-    
+
     # Limit number of samples if specified
     if num_samples is not None and num_samples < data_shape[0]:
         data_np = data_np[:num_samples]
         print(f"Using {num_samples} samples from the data")
-    
+
     # Determine data dimensions and reshape strategy
     if len(data_shape) == 2:
         # data (samples, features) - reshape to 2D format
         samples, features = data_shape
-        
+
         # Try to make the image as square as possible
         width = 2**(int(np.log2(features)) // 2)
         height = features // width
-        
+
         if height * width != features:
             # If not perfectly divisible, use a simple reshape
             height, width = 1, features
-        
+
         # Reshape data to [samples, 1, height, width]
         data = torch.from_numpy(data_np).float()
         if data.shape[1] != features:
             print(f"Warning: Data dimension ({data.shape[1]}) doesn't match expected features ({features})")
-        
+
         data = data.reshape(-1, 1, height, width)
         print(f"Reshaped 2D data to: {data.shape} with dimensions [batch, channels, height={height}, width={width}]")
-        
+
     elif len(data_shape) == 3:
         # data (samples, height, width) - add channel dimension
         samples, height, width = data_shape
-        
+
         # Convert to tensor and add channel dimension
         data = torch.from_numpy(data_np).float()
         data = data.unsqueeze(1)  # Add channel dimension [samples, 1, height, width]
         print(f"Reshaped 3D data to: {data.shape} with dimensions [batch, channels, height={height}, width={width}]")
-        
+
     else:
         raise ValueError(f"Unsupported data shape: {data_shape}, expected 2D or 3D array")
-    
+
     # Get appropriate dimension multipliers for UNet
     dim_mults = get_dim_mults_for_size(height, width)
     print(f"Using dimension multipliers: {dim_mults} for input size ({height}, {width})")
@@ -167,7 +185,7 @@ def train_model(data_path, seed=None, num_samples=None, gpu_id=0, epochs=None, s
     )
     
     print("Model initialized")
-    
+
     # Initialize diffusion process with proper image size
     diffusion = GaussianDiffusion(
         model,
@@ -182,26 +200,10 @@ def train_model(data_path, seed=None, num_samples=None, gpu_id=0, epochs=None, s
     print("Diffusion process initialized")
     
     # Initialize Trainer with custom epochs and optional save_timesteps for early stopping
-    # 计算有效 batch size，允许通过环境变量临时覆盖
-    cfg_bs = config.BATCH_SIZE if hasattr(config, "BATCH_SIZE") else 32
-    effective_batch = min(cfg_bs, len(dataset))
-    if OVERRIDE_BATCH:
-        effective_batch = max(1, min(effective_batch, OVERRIDE_BATCH))
-    print(f"Using effective batch size: {effective_batch} (config {cfg_bs}, dataset {len(dataset)})")
-
-    # 计算有效梯度累积（可用于保持等效大批次同时减小显存占用）
-    grad_acc = config.GRADIENT_ACCUMULATION if hasattr(config, "GRADIENT_ACCUMULATION") else 1
-    if OVERRIDE_GRAD_ACC:
-        grad_acc = max(1, OVERRIDE_GRAD_ACC)
-    print(f"Using gradient_accumulate_every: {grad_acc}")
-
-    # 禁用 AMP（如果环境变量设置了 DISABLE_AMP）
-    use_amp = bool(config.USE_AMP) and (not DISABLE_AMP)
-
     trainer = Trainer(
         diffusion,
         dataset,
-        train_batch_size=effective_batch,
+        train_batch_size=min(config.BATCH_SIZE, len(dataset)),
         train_lr=config.LEARNING_RATE,
         train_epochs=epochs,
         adamw_weight_decay=config.WEIGHT_DECAY,
@@ -212,29 +214,19 @@ def train_model(data_path, seed=None, num_samples=None, gpu_id=0, epochs=None, s
         T_mult=config.T_MULT,
         eta_min=config.COSINE_LR_MIN,
         cosine_steps=config.COSINE_STEPS,
-        gradient_accumulate_every=grad_acc,
+        gradient_accumulate_every=config.GRADIENT_ACCUMULATION,
         ema_decay=config.EMA_DECAY,
         split_batches=config.SPLIT_BATCHES,
         save_and_sample_every=config.SAVE_INTERVAL,
         results_folder=model_dir,
         param_path="",
-        amp=use_amp,
-        save_timesteps=save_timesteps,
+        amp=config.USE_AMP,
+        save_timesteps=save_timesteps,  # Pass save_timesteps for early stopping evaluation
     )
-
+    
     print("Trainer initialized")
-
-    # 在正式开始训练前尝试释放未使用的缓存，减少 OOM 风险
-    gc.collect()
-    try:
-        torch.cuda.empty_cache()
-        try:
-            print(torch.cuda.memory_summary(device=torch.device('cuda')))
-        except Exception:
-            pass
-    except Exception:
-        pass
-
+    
+    # Train model
     print(f"Starting training for {epochs} epochs...")
     trainer.train()
     
