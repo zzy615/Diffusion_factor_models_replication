@@ -480,29 +480,34 @@ def sigmoid_beta_schedule(timesteps, start = -3, end = 3, tau = 1, clamp_min = 1
 # Numerical Experiments --- generator of our simulated data    
 
 class GaussianLatentSampler2D_Finance(object):
-    def __init__(self, d_inner, image_size):
+    def __init__(self, d_inner, image_size, random_state = 42):
         self.image_size = image_size
         self.d_inner, self.d_outer = d_inner, image_size[0]*image_size[1]
-        self.A = np.random.randn(self.d_inner, self.d_outer)
+        self.rng = np.random.default_rng(random_state)
+        self.A = self.rng.standard_normal((self.d_inner, self.d_outer))
 
     def generate_data(self, N, latent_mean, latent_cov, noise_mean=None, noise_cov=None, sort_var=True, torch_tensor=False):
+        ground_truth_mean = self.A.T.dot(latent_mean) + noise_mean if noise_mean is not None else self.A.T.dot(latent_mean)
+        ground_truth_cov = self.A.T.dot(latent_cov).dot(self.A) + noise_cov if noise_cov is not None else self.A.T.dot(latent_cov).dot(self.A)
         if sort_var:
             if noise_cov is not None:
                 diagonal_elements = np.diag(self.A.T.dot(latent_cov).dot(self.A) + noise_cov)
                 # Sort the diagonal elements in descending order and get the indices
                 sorted_indices = np.argsort(diagonal_elements)[::-1]
-                factor = np.random.multivariate_normal(latent_mean, latent_cov, N).dot(self.A)
-                x = factor + np.random.multivariate_normal(noise_mean, noise_cov, N)
+                factor = self.rng.multivariate_normal(latent_mean, latent_cov, N).dot(self.A)
+                x = factor + self.rng.multivariate_normal(noise_mean, noise_cov, N)
                 factor = factor[:, sorted_indices]
                 x = x[:, sorted_indices]
             else:
                 diagonal_elements = np.diag(self.A.T.dot(latent_cov).dot(self.A))
                 # Sort the diagonal elements in descending order and get the indices
                 sorted_indices = np.argsort(diagonal_elements)[::-1]
-                factor = np.random.multivariate_normal(latent_mean, latent_cov, N).dot(self.A)
+                factor = self.rng.multivariate_normal(latent_mean, latent_cov, N).dot(self.A)
                 x = factor
                 factor = factor[:, sorted_indices]
                 x = x[:, sorted_indices]
+            ground_truth_mean = ground_truth_mean[sorted_indices]
+            ground_truth_cov = ground_truth_cov[np.ix_(sorted_indices, sorted_indices)]
         else:
             if noise_cov is not None:
                 factor = np.random.multivariate_normal(latent_mean, latent_cov, N).dot(self.A)
@@ -514,7 +519,7 @@ class GaussianLatentSampler2D_Finance(object):
             factor = torch.from_numpy(factor).float()
             x = torch.from_numpy(x).float()
 
-        return factor, x.reshape((N, self.image_size[0], self.image_size[1]))
+        return factor, x.reshape((N, self.image_size[0], self.image_size[1])),ground_truth_mean, ground_truth_cov
 
 class GaussianDiffusion(Module):
     def __init__(
