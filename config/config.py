@@ -25,9 +25,9 @@ SEED = 3407
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Model parameters
-MODEL_DIM = 128           # Base dimension for U-Net
+MODEL_DIM = 64            # Base dimension for U-Net
 MODEL_CHANNELS = 1        # Number of channels in input data
-MODEL_FILTER_SIZE = 5     # Filter size for convolutions
+MODEL_FILTER_SIZE = 7     # Filter size for convolutions
 
 # Dimension multipliers for different input sizes
 DIM_MULTS_LARGE = (1, 2, 4, 16)     # For inputs where min_dim >= 32
@@ -43,7 +43,7 @@ BETA_SCHEDULE = 'cosine'
 AUTO_NORMALIZE = False
 
 # Training parameters
-BATCH_SIZE = 32
+BATCH_SIZE = 64
 LEARNING_RATE = 1e-4
 EPOCHS = 600
 WEIGHT_DECAY = 0.01
@@ -62,7 +62,7 @@ SAVE_INTERVAL = 1000       # Save checkpoint every N epochs
 # Sampling parameters
 SAMPLE_BATCHES = 64       # Number of batches to sample
 SAMPLES_PER_BATCH = 128   # Number of samples per batch
-SAVE_TIMESTEPS = [20]     # Specific timesteps to save for early stopping evaluation (e.g., [100, 200, 500])
+SAVE_TIMESTEPS = None     # Specific timesteps to save for early stopping evaluation (e.g., [100, 200, 500])
                           # Set to None to save only final denoised samples
                           # Set to a list like [100, 200, 500] to save samples at those timesteps
 
